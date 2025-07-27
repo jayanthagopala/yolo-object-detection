@@ -68,8 +68,12 @@ class AutoFaceEmojiDetector:
         self.mouth_expressions = {
             'neutral': 0,
             'smile': 1, 
-            'open': 2,
-            'surprise': 3
+            'bigsmile': 2,
+            'open': 3,
+            'surprise': 4,
+            'frown': 5,
+            'pucker': 6,
+            'smirk': 7
         }
         
         # Performance tracking
@@ -139,7 +143,7 @@ class AutoFaceEmojiDetector:
             
         print(f"🎉 Successfully loaded {len(self.emojis)} emoji assets")
         print("📝 Expression mapping:")
-        expression_names = ['Neutral', 'Smile', 'Open Mouth', 'Surprise']
+        expression_names = ['Neutral', 'Smile', 'Big Smile', 'Open Mouth', 'Surprise', 'Frown', 'Pucker', 'Smirk']
         for i, name in enumerate(self.emoji_names):
             expr = expression_names[i] if i < len(expression_names) else f"Custom {i+1}"
             print(f"  {expr}: {name}")
@@ -189,64 +193,103 @@ class AutoFaceEmojiDetector:
         return faces, expressions
     
     def _analyze_mouth_expression(self, face_landmarks, width, height):
-        """Analyze mouth landmarks to determine expression."""
-        # Key mouth landmark indices for MediaPipe Face Mesh
-        # Upper lip: 13, 14, 15, 16, 17, 18
-        # Lower lip: 78, 95, 88, 178, 87, 14, 317, 402, 318, 324
-        # Mouth corners: 61 (left), 291 (right)
-        # Mouth center top: 13, bottom: 14
-        
+        """Analyze mouth landmarks to determine expression with 8 different mouth positions."""
         landmarks = face_landmarks.landmark
         
-        # Get mouth key points
-        mouth_top = landmarks[13]  # Upper lip center
-        mouth_bottom = landmarks[14]  # Lower lip center  
-        mouth_left = landmarks[61]   # Left corner
-        mouth_right = landmarks[291] # Right corner
+        # Key mouth landmark indices for MediaPipe Face Mesh
+        mouth_top = landmarks[13]      # Upper lip center
+        mouth_bottom = landmarks[14]   # Lower lip center  
+        mouth_left = landmarks[61]     # Left corner
+        mouth_right = landmarks[291]   # Right corner
+        
+        # Additional landmarks for better detection
+        upper_lip_top = landmarks[12]   # Top of upper lip
+        lower_lip_bottom = landmarks[15] # Bottom of lower lip
+        mouth_center_x = (landmarks[61].x + landmarks[291].x) / 2
+        mouth_center_y = (landmarks[13].y + landmarks[14].y) / 2
         
         # Convert to pixel coordinates
         mouth_top_y = mouth_top.y * height
         mouth_bottom_y = mouth_bottom.y * height
         mouth_left_x = mouth_left.x * width
         mouth_right_x = mouth_right.x * width
+        mouth_left_y = mouth_left.y * height
+        mouth_right_y = mouth_right.y * height
+        
+        upper_lip_top_y = upper_lip_top.y * height
+        lower_lip_bottom_y = lower_lip_bottom.y * height
         
         # Calculate mouth metrics
         mouth_height = abs(mouth_bottom_y - mouth_top_y)
         mouth_width = abs(mouth_right_x - mouth_left_x)
+        full_mouth_height = abs(lower_lip_bottom_y - upper_lip_top_y)
         
-        # Calculate mouth aspect ratio and opening
+        # Calculate ratios
         mouth_aspect_ratio = mouth_height / mouth_width if mouth_width > 0 else 0
+        full_aspect_ratio = full_mouth_height / mouth_width if mouth_width > 0 else 0
         
-        # Get mouth corner positions for smile detection
-        mouth_left_y = mouth_left.y * height
-        mouth_right_y = mouth_right.y * height
-        mouth_center_y = (mouth_top_y + mouth_bottom_y) / 2
+        # Smile/frown detection based on corner positions
+        mouth_center_y_px = mouth_center_y * height
+        corner_rise_left = mouth_center_y_px - mouth_left_y
+        corner_rise_right = mouth_center_y_px - mouth_right_y
+        avg_corner_rise = (corner_rise_left + corner_rise_right) / 2
         
-        # Smile detection: corners higher than center
-        smile_left = mouth_left_y < mouth_center_y - 2
-        smile_right = mouth_right_y < mouth_center_y - 2
-        is_smiling = smile_left and smile_right
+        # Asymmetry detection for smirk
+        corner_asymmetry = abs(corner_rise_left - corner_rise_right)
         
-        # Expression classification
-        if mouth_aspect_ratio > 0.08:  # Very open mouth
+        # Lip compression for pucker detection
+        lip_compression = mouth_width / width  # Relative to face width
+        
+        # Expression classification with enhanced logic
+        
+        # 1. Surprise - Very wide open mouth
+        if mouth_aspect_ratio > 0.12 or full_aspect_ratio > 0.15:
             return 'surprise'
-        elif mouth_aspect_ratio > 0.04:  # Moderately open mouth
+        
+        # 2. Open mouth - Speaking, moderate opening
+        elif mouth_aspect_ratio > 0.06 or full_aspect_ratio > 0.08:
             return 'open'
-        elif is_smiling:  # Smile detected
+        
+        # 3. Pucker - Compressed lips (small mouth width)
+        elif lip_compression < 0.08 and mouth_aspect_ratio < 0.03:
+            return 'pucker'
+        
+        # 4. Big smile - Strong upward corners with some mouth opening
+        elif avg_corner_rise > 8 and (mouth_aspect_ratio > 0.02 or corner_asymmetry < 3):
+            return 'bigsmile'
+        
+        # 5. Regular smile - Moderate upward corners
+        elif avg_corner_rise > 4 and corner_asymmetry < 4:
             return 'smile'
+        
+        # 6. Smirk - Asymmetric smile (one corner up more than the other)
+        elif corner_asymmetry > 4 and (corner_rise_left > 2 or corner_rise_right > 2):
+            return 'smirk'
+        
+        # 7. Frown - Downward corners
+        elif avg_corner_rise < -3:
+            return 'frown'
+        
+        # 8. Neutral - Default
         else:
             return 'neutral'
     
     def select_emoji_for_expression(self, expression):
         """Select appropriate emoji based on detected expression."""
+        # Map expressions to emoji indices based on alphabetical order of filenames
+        # Your files: bigsmile.png, frown.png, nuetral.png, open.png, pucker.png, smile.png, smirk.png, surprise.png
         expression_to_index = {
-            'neutral': 0,
-            'smile': 1,
-            'open': 2, 
-            'surprise': 3
+            'bigsmile': 0,    # bigsmile.png
+            'frown': 1,       # frown.png  
+            'neutral': 2,     # nuetral.png
+            'open': 3,        # open.png
+            'pucker': 4,      # pucker.png
+            'smile': 5,       # smile.png
+            'smirk': 6,       # smirk.png
+            'surprise': 7     # surprise.png
         }
         
-        emoji_index = expression_to_index.get(expression, 0)
+        emoji_index = expression_to_index.get(expression, 2)  # Default to neutral
         # Ensure index is within bounds
         return min(emoji_index, len(self.emojis) - 1)
     
@@ -446,9 +489,9 @@ class AutoFaceEmojiDetector:
     def _show_emoji_list(self):
         """Show available emoji list."""
         print("\n🎭 Available Emojis:")
-        expressions = ['Neutral', 'Smile', 'Open Mouth', 'Surprise']
+        expressions = ['Big Smile', 'Frown', 'Neutral', 'Open Mouth', 'Pucker', 'Smile', 'Smirk', 'Surprise']
         for i, name in enumerate(self.emoji_names, 1):
-            expr = expressions[i-1] if i-1 < len(expressions) else f"Custom {i}"
+            expr = expressions[i-1] if i-1 < len(expressions) else f"Expression {i}"
             marker = "👉" if i-1 == self.current_emoji_idx else "  "
             print(f"{marker} {i}. {name} ({expr})")
         print()
